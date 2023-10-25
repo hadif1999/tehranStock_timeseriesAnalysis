@@ -59,7 +59,7 @@ class get_Namad:
         
     
     def filter_Namads(self, Namads_withRows_moreThan = 2000, maxNull_percent = 50,
-                      inplace = True ):
+                      inplace = True, fillnan_method = "bfill" ):
         filtered_namads = []
         
         for namad in self.get_allNamads:
@@ -77,9 +77,11 @@ class get_Namad:
             self.Namads_data["names"] = [f"{self.__get_namad_name(namad)}" for namad in filtered_namads]
             self.Namads_data["namads"] = filtered_namads
             self.Namads_data["namads_df_raw"] = [namad.df for namad in filtered_namads]
-            self.get_NamadsDataset
+            self.get_NamadsDataset(fillnan_method = fillnan_method)
             
         return filtered_namads
+    
+    
     
     def get_NamadDatasetByName(self, Name:str):
         index = [self.Namads_data["names"].index(name) for name in self.Namads_data["names"]
@@ -87,8 +89,7 @@ class get_Namad:
         return self.Namads_data["namads"][index] 
     
     
-    @property
-    def get_NamadsDataset(self):
+    def get_NamadsDataset(self, fillnan_method = "bfill"):
         if self.Namads_data["namads"] == []: raise("no namads filtered yet. first filter them by filter_Namads")
         namads_df = []
         for namad in self.Namads_data["namads"]:
@@ -97,7 +98,7 @@ class get_Namad:
             df["volume"] = df['vol'] / df['vol'].max()
             df.drop(['close', 'vol'], axis = 1, inplace = True)
             df.fillna(0)
-            df = self.fillnans_bfill(df)
+            df = self.fillnans(df, method = fillnan_method)
             namads_df.append(df)
         self.Namads_data["namads_df"] = namads_df
         return namads_df
@@ -109,7 +110,7 @@ class get_Namad:
         df["volume"] = df['vol'] / df['vol'].max()
         df.drop(['close', 'vol'], axis = 1, inplace = True)
         df.fillna(0)
-        df = self.fillnans_bfill(df)
+        df = self.fillnans(df, method = "bfill")
         return df
     
     
@@ -122,22 +123,26 @@ class get_Namad:
     
     
     
-    def fillnans_bfill(self, df:pd.DataFrame):
+    def fillnans(self, df:pd.DataFrame, method = "bfill"):
         df_ = df.copy()
         new_ind = pd.date_range(df_.index[0], df_.index[-1])
         df_ = df_.reindex(new_ind)
-        df_.bfill(inplace = True)
+        match method.lower():
+            case "bfill": df_.bfill(inplace = True)
+            case "ffill": df_.ffill(inplace = True)
+            case "interpolate": df_ = df_.astype("float64").interpolate(axis=0, limit_direction = "both")
+            case _: raise ValueError(f"{method.lower()} fillnan method not found")
         return df_
 
     
-    def save_namads2CSV(self, dir_name = None, remove_previous = False):
+    def save_namads2CSV(self, dir_name = None, remove_previous = False, which_data = "namads_df"):
         cwd = os.getcwd()
         if dir_name == None: dir_name = 'dataset'
         if  remove_previous and dir_name in os.listdir(): shutil.rmtree(dir_name)
         if not dir_name in os.listdir(): os.mkdir(dir_name)
         os.chdir(dir_name)
-        for namad in self.Namads_data["namads"]: 
-            namad.df.to_csv(f"{self.__get_namad_name(namad)}.csv")
+        for name, namad in zip(self.Namads_data["names"], self.Namads_data[which_data]): 
+            namad.df.to_csv(f"{name}.csv") if which_data=="namads" else namad.to_csv(f"{name}.csv")
         os.chdir(cwd)
         
         
@@ -146,8 +151,6 @@ class get_Namad:
         return f"{namad_obj.group_name}-->{namad_title}"
         
     
-    
-        
         
 class train_model:
     def __init__(self, model_type:str = "LSTM"
