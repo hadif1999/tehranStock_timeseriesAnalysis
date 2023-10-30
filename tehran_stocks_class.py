@@ -95,7 +95,7 @@ class get_Namad:
     
     
     def get_NamadsDataset(self, fillnan_method = "bfill"):
-        if self.Namads_data["namads"] == []: raise("no namads filtered yet. first filter them by filter_Namads")
+        if self.Namads_data["namads"] == []: raise Exception("no namads filtered yet. first filter them by filter_Namads")
         namads_df = []
         for namad in self.Namads_data["namads"]:
             df:pd.DataFrame = namad.df[['close', 'vol']].copy()
