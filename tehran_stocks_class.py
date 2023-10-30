@@ -16,6 +16,10 @@ import torch
 from darts.metrics.metrics import quantile_loss
 from pytorch_forecasting.metrics.quantile import QuantileLoss
 from torch.nn.modules import L1Loss
+from darts.metrics.metrics import mse, mae, r2_score
+from IPython.display import clear_output
+import pickle
+
 
 
 
@@ -74,12 +78,13 @@ class get_Namad:
         filtered_namads = sorted(filtered_namads, key = lambda x: len(x.df), reverse = True ) 
                    
         if inplace: 
-            self.Namads_data["names"] = [f"{self.__get_namad_name(namad)}" for namad in filtered_namads]
+            self.Namads_data["names"] = [f"{self.get_namad_name(namad)}" for namad in filtered_namads]
             self.Namads_data["namads"] = filtered_namads
             self.Namads_data["namads_df_raw"] = [namad.df for namad in filtered_namads]
             self.get_NamadsDataset(fillnan_method = fillnan_method)
             
         return filtered_namads
+    
     
     
     
@@ -146,10 +151,9 @@ class get_Namad:
         os.chdir(cwd)
         
         
-    def __get_namad_name(self, namad_obj:object) -> str:
+    def get_namad_name(self, namad_obj:object) -> str:
         namad_title = namad_obj.title.removesuffix("',FaraDesc ='")
         return f"{namad_obj.group_name}-->{namad_title}"
-        
     
         
 class train_model:
@@ -158,7 +162,7 @@ class train_model:
                  input_BatchSize = 100, train_len = 50, dropout = 0 ) -> None:
         
         model_type = model_type.upper()
-        assert model_type in ["LSTM", "GRU"], "model can be 'LSTM' or 'GRU'"
+        assert model_type in ["LSTM", "GRU", "RNN"], "model can be 'LSTM' or 'GRU'"
         assert train_len < input_BatchSize, "train len must be smaller than input batch size"
         
         self.model = RNNModel(hidden_dim = layer_size,
@@ -167,7 +171,7 @@ class train_model:
                          n_rnn_layers = numOf_hiddenLayers,
                          dropout = dropout,
                          input_chunk_length = train_len,
-                         loss_fn = loss_obj
+                         loss_fn = loss_obj,
                         )
         self.ts_train = None
         self.ts_test = None
@@ -181,25 +185,84 @@ class train_model:
         self.model.fit(self.ts_train, epochs = epochs)
         
         
+        
     def predict_and_plot(self, nTimestemps = None, plot_train_data = False, which_column = None,
-                         inplace = True):
+                         inplace = True, plot_results = True):
+        
         y_hat = self.model.predict(nTimestemps if nTimestemps else len(self.ts_test))
         if plot_train_data: 
             self.ts_train[which_column].plot(label=f"{which_column} train") \
             if which_column else self.ts_train.plot(label=f"train")
         
-        y_hat[which_column].plot(label=f"{which_column} predicted") if which_column \
-        else y_hat.plot(label='predicted')
-        
-        self.ts_test[which_column].plot(label=f"{which_column} test") if which_column \
-        else self.ts_test.plot(f"test")
+        if plot_results:
+            y_hat[which_column].plot(label=f"{which_column} predicted") if which_column \
+            else y_hat.plot(label='predicted')
+            
+            self.ts_test[which_column].plot(label=f"{which_column} test") if which_column \
+            else self.ts_test.plot(f"test")
         
         if inplace: self.y_hat = y_hat
         return y_hat         
     
     
     def evaluate_metrics(self, metrics_list:list):
-        return [metric(self.ts_test, self.y_hat) for metric in metrics_list]
+        return {metric.__name__: metric(self.ts_test, self.y_hat) for metric in metrics_list}
+    
+    
+    def bulk_train_on_Namad(Namad, losses:list, *, epochs = 2, train_test_ratio = 0.1,
+                   metrics:list = [mse, mae, r2_score], model_types = ["LSTM", "GRU"], 
+                   layerSizes = [20], numOfHiddenLayers = [2], input_BatchSize = [100],
+                   train_len = [70], dropouts = [0]):
+        
+        columns = ["namad_name", "loss", "epochs", "train_test_ratio", "metrics", "model", "layerSize",
+                   "numOfHiddenLayers", "input_batchSize", "train_len", "train_obj"]
+        results_df = pd.DataFrame(columns = columns)
+        
+        for model in model_types:
+            for nlayer in numOfHiddenLayers:
+                for layer_size in layerSizes:
+                    for batchsize in input_BatchSize:
+                        for trainlen in train_len:
+                            for dropout in dropouts:
+                                for loss in losses:
+                                    train_obj = train_model(model, layer_size, nlayer, loss, batchsize, 
+                                                            trainlen, dropout)
+                                    namad_obj = get_Namad()
+                                    print(f"\n\ntraining on: {namad_obj.get_namad_name(Namad)}\n\n")
+                                    train_obj.train_on_Namad(Namad, epochs, train_test_ratio)
+                                    train_obj.predict_and_plot(plot_results = False)
+                                    metric_results = train_obj.evaluate_metrics(metrics)
+                                    row_data = [namad_obj.get_namad_name(Namad) , 
+                                                {loss.__class__.__name__: loss.__dict__},
+                                                epochs, train_test_ratio, metric_results, model,
+                                                layer_size, nlayer, batchsize, trainlen, train_obj]
+                                    results_df.loc[len(results_df)] = row_data
+                                    clear_output()
+                                    del train_obj, namad_obj
+                                    print("\n\ndone\n\n")
+        return results_df
+    
+    
+    def train_on_AllNamads(get_Namad_object:get_Namad, save_as_pickle = True, pickle_filename = None,
+                           **kwargs):
+        
+        columns = ["namad_name", "loss", "epochs", "train_test_ratio", "metrics", "model", "layerSize",
+                   "numOfHiddenLayers", "input_batchSize", "train_len", "train_obj"]
+        
+        total_results_df = pd.DataFrame(columns = columns)
+        for namad in get_Namad_object.Namads_data["namads"]:
+            df = train_model.bulk_train_on_Namad(namad, **kwargs)
+            total_results_df = pd.concat([total_results_df, df], axis=0, ignore_index = True)
+        
+        if save_as_pickle: 
+            filename = pickle_filename if pickle_filename else "BulkRunResult_Namads.txt" 
+            if filename in os.listdir(): os.remove(filename)
+            with open(filename, "wb") as file:
+                pickle.dump(total_results_df, file)
+                file.close()    
+        return total_results_df 
+                                
+                                
         
         
         
@@ -216,6 +279,9 @@ class PinBall_Loss(torch.nn.Module):
         
     def __call__(self, y_hat, y): 
         return torch.where(y >= y_hat, self.tau*(y-y_hat), (1-self.tau)*(y_hat-y) ).mean()
+    
+    
+    
         
         
 
