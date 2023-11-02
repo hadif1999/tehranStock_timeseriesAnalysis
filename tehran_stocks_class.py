@@ -91,7 +91,7 @@ class get_Namad:
     def get_NamadDatasetByName(self, Name:str):
         index = [self.Namads_data["names"].index(name) for name in self.Namads_data["names"]
                 if Name in name][0]
-        return self.Namads_data["namads"][index] 
+        return self.Namads_data["namads_df"][index] 
     
     
     def get_NamadsDataset(self, fillnan_method = "bfill"):
@@ -151,6 +151,30 @@ class get_Namad:
         os.chdir(cwd)
         
         
+        
+    def readNamads_fromCSVfiles(self, dir:str):
+        pwd = os.getcwd()
+        os.chdir(dir)
+        Namad_names = os.listdir()
+        self.Namads_data["names"] = Namad_names
+        self.Namads_data["namads"] = []
+        self.Namads_data["namads_df_raw"] = []
+        self.Namads_data["namads_df"] = []
+        
+        for namad_name in Namad_names: # time as index
+            df = pd.read_csv(namad_name).rename(columns={"Unnamed: 0":"time"})
+            df["time"] = pd.to_datetime(df["time"])
+            df.set_index("time", inplace = True)
+            self.Namads_data["namads_df"].append(df)
+            
+        os.chdir(pwd)
+        return self.Namads_data["names"]
+    
+    
+    def get_Namad_fullname_bySome(self, partOfName:str):
+        return [namad_name for namad_name in self.Namads_data["names"] if partOfName in namad_name][0]
+        
+        
     def get_namad_name(self, namad_obj:object) -> str:
         namad_title = namad_obj.title.removesuffix("',FaraDesc ='")
         return f"{namad_obj.group_name}-->{namad_title}"
@@ -177,9 +201,8 @@ class train_model:
         self.ts_test = None
     
     
-    def train_on_Namad(self, Namad_object, epochs = 3, train_test_ratio = 0.2):
-        namad_getter = get_Namad()
-        df = namad_getter.get_Namad_Dataset(Namad_object)
+    def train_on_Namad(self, Namad_df, epochs = 3, train_test_ratio = 0.2):
+        df = Namad_df.copy()
         ts = TimeSeries.from_dataframe(df, freq='1D', fill_missing_dates = False)
         self.ts_train, self.ts_test = ts.split_after(1-train_test_ratio)
         self.model.fit(self.ts_train, epochs = epochs)
@@ -209,7 +232,7 @@ class train_model:
         return {metric.__name__: metric(self.ts_test, self.y_hat) for metric in metrics_list}
     
     
-    def bulk_train_on_Namad(Namad, losses:list, *, epochs = 2, train_test_ratio = 0.1,
+    def _bulk_train_on_Namad(Namad_name, namads_CSV_dir, losses:list, *, epochs = 2, train_test_ratio = 0.1,
                    metrics:list = [mse, mae, r2_score], model_types = ["LSTM", "GRU"], 
                    layerSizes = [20], numOfHiddenLayers = [2], input_BatchSize = [100],
                    train_len = [70], dropouts = [0]):
@@ -228,11 +251,15 @@ class train_model:
                                     train_obj = train_model(model, layer_size, nlayer, loss, batchsize, 
                                                             trainlen, dropout)
                                     namad_obj = get_Namad()
-                                    print(f"\n\ntraining on: {namad_obj.get_namad_name(Namad)}\n\n")
-                                    train_obj.train_on_Namad(Namad, epochs, train_test_ratio)
+                                    namad_obj.readNamads_fromCSVfiles(namads_CSV_dir)
+                                    namad_full_name = namad_obj.get_Namad_fullname_bySome(Namad_name)
+                                    namad_df = namad_obj.get_NamadDatasetByName(Namad_name)
+                                    print(f"\n\ntraining on: {namad_full_name}\n\n")
+                                    train_obj.train_on_Namad(namad_df,
+                                                             epochs, train_test_ratio)
                                     train_obj.predict_and_plot(plot_results = False)
                                     metric_results = train_obj.evaluate_metrics(metrics)
-                                    row_data = [namad_obj.get_namad_name(Namad) , 
+                                    row_data = [namad_full_name , 
                                                 {loss.__class__.__name__: loss.__dict__},
                                                 epochs, train_test_ratio, metric_results, model,
                                                 layer_size, nlayer, batchsize, trainlen, train_obj]
@@ -243,23 +270,25 @@ class train_model:
         return results_df
     
     
-    def train_on_AllNamads(get_Namad_object:get_Namad, save_as_pickle = True, pickle_filename = None,
-                           **kwargs):
+    def train_on_AllNamads(get_Namad_object:get_Namad, save_as_pickle = True, 
+                           filename2save = "BulkRunResult_Namads",
+                           saveAsCSV = True ,**kwargs):
         
         columns = ["namad_name", "loss", "epochs", "train_test_ratio", "metrics", "model", "layerSize",
                    "numOfHiddenLayers", "input_batchSize", "train_len", "train_obj"]
         
         total_results_df = pd.DataFrame(columns = columns)
-        for namad in get_Namad_object.Namads_data["namads"]:
-            df = train_model.bulk_train_on_Namad(namad, **kwargs)
+        for namad_name in get_Namad_object.Namads_data["names"]:
+            df = train_model._bulk_train_on_Namad(namad_name, **kwargs)
             total_results_df = pd.concat([total_results_df, df], axis=0, ignore_index = True)
         
         if save_as_pickle: 
-            filename = pickle_filename if pickle_filename else "BulkRunResult_Namads.txt" 
+            filename = filename2save+".txt"  
             if filename in os.listdir(): os.remove(filename)
             with open(filename, "wb") as file:
                 pickle.dump(total_results_df, file)
                 file.close()    
+        if saveAsCSV: total_results_df.to_csv(filename2save+".csv")
         return total_results_df 
                                 
                                 
